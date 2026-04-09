@@ -18,12 +18,20 @@ enum Commands {
     Pack {
         #[arg(short, long, help = "the directory to pack")]
         input: String,
+        #[arg(short, long, help = "the output file")]
+        output: String,
+        #[arg(short, long, help = "the password or key")]
+        password: String,
     },
 
     #[command(name = "unpack", about = "unpack a .tar.xz.enc file into a directory")]
     Unpack {
         #[arg(short, long, help = "the file to unpack")]
         input: String,
+        #[arg(short, long, help = "the output directory")]
+        output: String,
+        #[arg(short, long, help = "the password or key")]
+        password: String,
     }
 }
 
@@ -31,11 +39,17 @@ fn main(){
     let cli = Cli::parse();
 
     match &cli.command {
-        Some(Commands::Pack { input }) => {
-            pack(input);
+        Some(Commands::Pack { input, output, password }) => {
+            let input_path = std::path::Path::new(input);
+            let output_path = std::path::Path::new(output);
+
+            pack(input_path, output_path, password.as_str());
         }
-        Some(Commands::Unpack { input }) => {
-            unpack(input);
+        Some(Commands::Unpack { input, output, password }) => {
+            let input_path = std::path::Path::new(input);
+            let output_path = std::path::Path::new(output);
+
+            unpack(input_path, output_path, password.as_str());
         }
         None => {
             run_ui();

@@ -1,0 +1,17 @@
+[package]
+name = "riftx"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "riftx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "riftx"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.0", features = ["derive"] }
+crossterm = "0.29.0"
+ratatui = "0.30.0"

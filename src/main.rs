@@ -1,6 +1,8 @@
 use crossterm::event::{self, Event};
 use ratatui::{DefaultTerminal, Frame};
-use std::io::Result;
+use std::error::Error;
+use std::io::Result as IoResult;
+use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 
 use riftx::{pack, unpack};
@@ -18,8 +20,8 @@ enum Commands {
     Pack {
         #[arg(short, long, help = "the directory to pack")]
         input: String,
-        #[arg(short, long, help = "the output file")]
-        output: String,
+        #[arg(short, long, help = "the output file, defaults to <dir_name>.tar.xz.enc")]
+        output: Option<String>,
         #[arg(short, long, help = "the password or key")]
         password: String,
     },
@@ -28,33 +30,77 @@ enum Commands {
     Unpack {
         #[arg(short, long, help = "the file to unpack")]
         input: String,
-        #[arg(short, long, help = "the output directory")]
-        output: String,
+        #[arg(short, long, help = "the output directory, defaults to <folder_name> in the current working folder")]
+        output: Option<String>,
         #[arg(short, long, help = "the password or key")]
         password: String,
     }
 }
 
 fn main(){
+    if let Err(error) = run_cli() {
+        eprintln!("{}", error);
+        std::process::exit(1);
+    }
+}
+
+fn run_cli() -> std::result::Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match &cli.command {
         Some(Commands::Pack { input, output, password }) => {
             let input_path = std::path::Path::new(input);
-            let output_path = std::path::Path::new(output);
+            let output_path = output
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    let archive_name = input_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("archive");
 
-            pack(input_path, output_path, password.as_str());
+                    PathBuf::from(format!("{}.tar.xz.enc", archive_name))
+                });
+
+            pack(input_path, &output_path, password.as_str())?;
         }
         Some(Commands::Unpack { input, output, password }) => {
             let input_path = std::path::Path::new(input);
-            let output_path = std::path::Path::new(output);
+            let output_path = output
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_unpack_output(input_path));
 
-            unpack(input_path, output_path, password.as_str());
+            unpack(input_path, &output_path, password.as_str())?;
         }
         None => {
             run_ui();
         }
     }
+
+    Ok(())
+}
+
+fn default_unpack_output(input_path: &Path) -> PathBuf {
+    let archive_name = input_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("archive");
+
+    let folder_name = archive_name
+        .strip_suffix(".tar.xz.enc")
+        .or_else(|| archive_name.strip_suffix(".enc"))
+        .unwrap_or(archive_name);
+
+    let output_name = if folder_name.is_empty() {
+        "archive"
+    } else {
+        folder_name
+    };
+
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(output_name)
 }
 
 
@@ -65,7 +111,7 @@ fn run_ui() {
     ratatui::restore();
 }
 
-fn run(mut terminal: DefaultTerminal) -> Result<()> {
+fn run(mut terminal: DefaultTerminal) -> IoResult<()> {
     loop {
         terminal.draw(render)?;
         if matches!(event::read()?, Event::Key(_)) {

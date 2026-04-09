@@ -46,7 +46,13 @@ pub fn pack(source_dir: &Path, destination_file: &Path, password: &str) -> Resul
 }
 
 pub fn unpack(source_file: &Path, destination_dir: &Path, password: &str) -> Result<(), Box<dyn Error>> {
-    let destination_preexisted = destination_dir.exists();
+    if destination_dir.exists() {
+        return Err(std::io::Error::new(
+            ErrorKind::AlreadyExists,
+            "destination folder already exists",
+        )
+        .into());
+    }
 
     let mut src_file = File::open(source_file)?;
 
@@ -65,8 +71,7 @@ pub fn unpack(source_file: &Path, destination_dir: &Path, password: &str) -> Res
 
     // 5. Execute the streaming pull
     if let Err(error) = tar_archive.unpack(destination_dir) {
-        let should_remove_destination = !destination_preexisted
-            && error.kind() == ErrorKind::InvalidData;
+        let should_remove_destination = error.kind() == ErrorKind::InvalidData;
 
         if should_remove_destination {
             let _ = fs::remove_dir_all(destination_dir);

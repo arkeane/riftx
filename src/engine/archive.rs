@@ -10,6 +10,14 @@ use liblzma::write::XzEncoder;
 use liblzma::read::XzDecoder;
 
 pub fn pack(source_dir: &Path, destination_file: &Path, password: &str) -> Result<(), Box<dyn Error>> {
+    if !source_dir.is_dir() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "pack source must be a directory",
+        )
+        .into());
+    }
+
     // 1. Core: Open the file
     let mut dest_file = File::create(destination_file)?;
 

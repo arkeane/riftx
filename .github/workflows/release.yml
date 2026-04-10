@@ -69,7 +69,7 @@ jobs:
         run: |
           VERSION=${{ github.ref_name }}
           mv artifacts/riftx-x86_64-linux/riftx         artifacts/riftx-${VERSION}-x86_64-linux
-          mv artifacts/riftx-x86_64-windows/riftx.exe   artifacts/riftx-${VERSION}-x86_64-windows.exe
+          mv artifacts/riftx-x86_64-windows.exe/riftx.exe artifacts/riftx-${VERSION}-x86_64-windows.exe
           mv artifacts/riftx-aarch64-macos/riftx         artifacts/riftx-${VERSION}-aarch64-macos
           zip -r artifacts/source.zip . \
             --exclude '.git/*' \

@@ -1,11 +1,13 @@
 use crate::engine::crypto::{CryptoReader, CryptoWriter, generate_salt};
 use liblzma::read::XzDecoder;
+use liblzma::stream::MtStreamBuilder;
 use liblzma::write::XzEncoder;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
+use std::thread;
 use tar::Archive;
 use tar::Builder;
 
@@ -32,8 +34,17 @@ pub fn pack(
     // 3. Layer 1: The Encryptor
     let encryptor = CryptoWriter::new(dest_file, password, &salt)?;
 
-    // 4. Layer 2: The Compressor
-    let compressor = XzEncoder::new(encryptor, 6);
+    // 4. Layer 2: The Compressor (multi-threaded)
+    let thread_count = thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
+
+    let mt_stream = MtStreamBuilder::new()
+        .threads(thread_count)
+        .preset(6)
+        .encoder()?;
+
+    let compressor = XzEncoder::new_stream(encryptor, mt_stream);
 
     // 5. The Shell: The Tar Builder
     let mut tar_builder = Builder::new(compressor);

@@ -2,6 +2,8 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
 
+use rayon::prelude::*;
+
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
@@ -111,6 +113,56 @@ impl<W: Write> CryptoWriter<W> {
 
         Ok(())
     }
+
+    /// Encrypts multiple complete frames in parallel using rayon, then writes them in order.
+    ///
+    /// `buf` must be a multiple of `FRAME_PLAINTEXT_LEN` — the caller is responsible
+    /// for splitting off any trailing partial frame before calling this.
+    fn write_frames_parallel(&mut self, buf: &[u8]) -> io::Result<()> {
+        debug_assert!(buf.len() % FRAME_PLAINTEXT_LEN == 0);
+
+        let frames: Vec<&[u8]> = buf.chunks(FRAME_PLAINTEXT_LEN).collect();
+        let n = frames.len() as u64;
+        let base_counter = self.frame_counter;
+
+        // Verify the counter can accommodate all frames before doing any work.
+        base_counter
+            .checked_add(n)
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "frame counter overflow"))?;
+
+        // Encrypt all frames in parallel. `ChaCha20Poly1305::encrypt` takes `&self`
+        // so the cipher is `Sync` and safe to share across rayon threads.
+        let results: Vec<io::Result<(u32, Vec<u8>)>> = {
+            let cipher = &self.cipher;
+            frames
+                .par_iter()
+                .enumerate()
+                .map(|(i, frame)| {
+                    let nonce_bytes = counter_nonce(base_counter + i as u64);
+                    let plaintext_len = u32::try_from(frame.len())
+                        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "frame too large"))?;
+                    let ciphertext = cipher
+                        .encrypt(Nonce::from_slice(&nonce_bytes), *frame)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
+                    Ok((plaintext_len, ciphertext))
+                })
+                .collect()
+        };
+
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| io::Error::new(ErrorKind::BrokenPipe, "writer already finished"))?;
+
+        for result in results {
+            let (plaintext_len, ciphertext) = result?;
+            inner.write_all(&plaintext_len.to_le_bytes())?;
+            inner.write_all(&ciphertext)?;
+        }
+
+        self.frame_counter += n;
+        Ok(())
+    }
 }
 
 impl<W: Write> Write for CryptoWriter<W> {
@@ -119,11 +171,21 @@ impl<W: Write> Write for CryptoWriter<W> {
             return Ok(0);
         }
 
-        let mut offset = 0;
-        while offset < buf.len() {
-            let end = cmp::min(offset + FRAME_PLAINTEXT_LEN, buf.len());
-            self.write_frame(&buf[offset..end])?;
-            offset = end;
+        // If there are 2+ complete frames available, encrypt them in parallel.
+        // The 2-frame threshold avoids rayon overhead on small or trickle writes.
+        let complete_len = (buf.len() / FRAME_PLAINTEXT_LEN) * FRAME_PLAINTEXT_LEN;
+        if complete_len >= 2 * FRAME_PLAINTEXT_LEN {
+            self.write_frames_parallel(&buf[..complete_len])?;
+            if complete_len < buf.len() {
+                self.write_frame(&buf[complete_len..])?;
+            }
+        } else {
+            let mut offset = 0;
+            while offset < buf.len() {
+                let end = cmp::min(offset + FRAME_PLAINTEXT_LEN, buf.len());
+                self.write_frame(&buf[offset..end])?;
+                offset = end;
+            }
         }
 
         Ok(buf.len())

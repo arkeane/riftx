@@ -1,12 +1,14 @@
 use std::cmp;
+use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
+    aead::{Aead, KeyInit},
 };
 use rand::random;
+use zeroize::Zeroizing;
 
 const SALT_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
@@ -14,46 +16,68 @@ const TAG_LEN: usize = 16;
 const FRAME_PLAINTEXT_LEN: usize = 64 * 1024;
 const KEY_LEN: usize = 32;
 
+// Argon2id parameters — kept separate from the frame size constant.
+// 64 MB memory, 8 iterations, 1 thread. Higher t_cost is appropriate for an
+// offline archiving tool where latency is not a constraint.
+const ARGON2_M_COST: u32 = 65536; // 64 MB
+const ARGON2_T_COST: u32 = 8;
+const ARGON2_P_COST: u32 = 1;
+
 /// Generates the 32-byte public salt
-pub fn generate_salt() -> [u8; 32] {
+pub fn generate_salt() -> [u8; SALT_LEN] {
     random()
 }
 
-fn derive_key(password: &str, salt: &[u8; SALT_LEN]) -> io::Result<[u8; KEY_LEN]> {
-    let params = Params::new(64 * 1024, 3, 1, Some(KEY_LEN))
+fn derive_key(password: &str, salt: &[u8; SALT_LEN]) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
+    let params = Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(KEY_LEN))
         .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error.to_string()))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let mut key = [0u8; KEY_LEN];
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
     argon2
-        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .hash_password_into(password.as_bytes(), salt, key.as_mut())
         .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error.to_string()))?;
 
     Ok(key)
 }
 
-/// The custom Russian Doll encryption layer
+/// Builds a 12-byte nonce from a u64 frame counter (LE) padded with zeros.
+/// Counter nonces guarantee uniqueness without relying on RNG quality.
+fn counter_nonce(frame_counter: u64) -> [u8; NONCE_LEN] {
+    let mut nonce = [0u8; NONCE_LEN];
+    nonce[..8].copy_from_slice(&frame_counter.to_le_bytes());
+    nonce
+}
+
+/// The custom Russian Doll encryption layer.
+///
+/// On-disk frame format: `[plaintext_len: u32 LE] [ciphertext+tag: plaintext_len+TAG_LEN bytes]`
+/// The nonce is derived from the frame counter and never stored on disk.
 pub struct CryptoWriter<W: Write> {
     inner: Option<W>,
     cipher: ChaCha20Poly1305,
+    /// Monotonically increasing counter; used as the per-frame nonce.
+    frame_counter: u64,
 }
 
 impl<W: Write> CryptoWriter<W> {
     pub fn new(inner: W, password: &str, salt: &[u8; SALT_LEN]) -> io::Result<Self> {
         let key = derive_key(password, salt)?;
-        let cipher = ChaCha20Poly1305::new_from_slice(&key)
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
             .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error.to_string()))?;
 
         Ok(Self {
             inner: Some(inner),
             cipher,
+            frame_counter: 0,
         })
     }
 
     pub fn finish(mut self) -> io::Result<W> {
-        let mut inner = self.inner.take().ok_or_else(|| {
-            io::Error::new(ErrorKind::BrokenPipe, "writer already finished")
-        })?;
+        let mut inner = self
+            .inner
+            .take()
+            .ok_or_else(|| io::Error::new(ErrorKind::BrokenPipe, "writer already finished"))?;
         inner.flush()?;
         Ok(inner)
     }
@@ -63,7 +87,12 @@ impl<W: Write> CryptoWriter<W> {
             return Ok(());
         }
 
-        let nonce_bytes = random::<[u8; NONCE_LEN]>();
+        let nonce_bytes = counter_nonce(self.frame_counter);
+        self.frame_counter = self
+            .frame_counter
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "frame counter overflow"))?;
+
         let ciphertext = self
             .cipher
             .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
@@ -78,7 +107,6 @@ impl<W: Write> CryptoWriter<W> {
             .ok_or_else(|| io::Error::new(ErrorKind::BrokenPipe, "writer already finished"))?;
 
         inner.write_all(&plaintext_len.to_le_bytes())?;
-        inner.write_all(&nonce_bytes)?;
         inner.write_all(&ciphertext)?;
 
         Ok(())
@@ -112,21 +140,23 @@ impl<W: Write> Write for CryptoWriter<W> {
 pub struct CryptoReader<R: Read> {
     inner: R,
     cipher: ChaCha20Poly1305,
-    
-    /// Holds decrypted bytes that the upper layers haven't asked for yet
-    internal_buffer: Vec<u8>,
+    /// Frame counter used to reconstruct the nonce; must advance in lockstep with the writer.
+    frame_counter: u64,
+    /// Holds decrypted bytes that the upper layers haven't consumed yet.
+    internal_buffer: VecDeque<u8>,
 }
 
 impl<R: Read> CryptoReader<R> {
     pub fn new(inner: R, password: &str, salt: &[u8; SALT_LEN]) -> io::Result<Self> {
         let key = derive_key(password, salt)?;
-        let cipher = ChaCha20Poly1305::new_from_slice(&key)
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
             .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error.to_string()))?;
 
         Ok(Self {
             inner,
             cipher,
-            internal_buffer: Vec::new(),
+            frame_counter: 0,
+            internal_buffer: VecDeque::new(),
         })
     }
 
@@ -158,12 +188,15 @@ impl<R: Read> CryptoReader<R> {
             ));
         }
 
-        let mut nonce_bytes = [0u8; NONCE_LEN];
-        self.inner.read_exact(&mut nonce_bytes)?;
+        let nonce_bytes = counter_nonce(self.frame_counter);
+        self.frame_counter = self
+            .frame_counter
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "frame counter overflow"))?;
 
-        let ciphertext_len = plaintext_len
-            .checked_add(TAG_LEN)
-            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "invalid encrypted frame size"))?;
+        let ciphertext_len = plaintext_len.checked_add(TAG_LEN).ok_or_else(|| {
+            io::Error::new(ErrorKind::InvalidData, "invalid encrypted frame size")
+        })?;
         let mut ciphertext = vec![0u8; ciphertext_len];
         self.inner.read_exact(&mut ciphertext)?;
 
@@ -172,8 +205,20 @@ impl<R: Read> CryptoReader<R> {
             .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref())
             .map_err(|error| io::Error::new(ErrorKind::InvalidData, error.to_string()))?;
 
-        self.internal_buffer.extend_from_slice(&plaintext);
+        self.internal_buffer.extend(plaintext);
         Ok(true)
+    }
+
+    /// Drains up to `buf.len()` bytes from the internal buffer into `buf`.
+    fn consume_buffer(&mut self, buf: &mut [u8]) -> usize {
+        let to_read = cmp::min(buf.len(), self.internal_buffer.len());
+        for (dst, src) in buf[..to_read]
+            .iter_mut()
+            .zip(self.internal_buffer.drain(..to_read))
+        {
+            *dst = src;
+        }
+        to_read
     }
 }
 
@@ -183,22 +228,10 @@ impl<R: Read> Read for CryptoReader<R> {
             return Ok(0);
         }
 
-        if !self.internal_buffer.is_empty() {
-            let to_read = cmp::min(buf.len(), self.internal_buffer.len());
-            buf[..to_read].copy_from_slice(&self.internal_buffer[..to_read]);
-            self.internal_buffer.drain(..to_read);
-
-            return Ok(to_read);
-        }
-
-        if !self.fill_internal_buffer()? {
+        if self.internal_buffer.is_empty() && !self.fill_internal_buffer()? {
             return Ok(0);
         }
 
-        let to_read = cmp::min(buf.len(), self.internal_buffer.len());
-        buf[..to_read].copy_from_slice(&self.internal_buffer[..to_read]);
-        self.internal_buffer.drain(..to_read);
-
-        Ok(to_read)
+        Ok(self.consume_buffer(buf))
     }
 }

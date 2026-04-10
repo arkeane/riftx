@@ -1,15 +1,19 @@
-use crate::engine::crypto::{CryptoWriter, CryptoReader, generate_salt};
+use crate::engine::crypto::{CryptoReader, CryptoWriter, generate_salt};
+use liblzma::read::XzDecoder;
+use liblzma::write::XzEncoder;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
-use tar::Builder;
 use tar::Archive;
-use liblzma::write::XzEncoder;
-use liblzma::read::XzDecoder;
+use tar::Builder;
 
-pub fn pack(source_dir: &Path, destination_file: &Path, password: &str) -> Result<(), Box<dyn Error>> {
+pub fn pack(
+    source_dir: &Path,
+    destination_file: &Path,
+    password: &str,
+) -> Result<(), Box<dyn Error>> {
     if !source_dir.is_dir() {
         return Err(std::io::Error::new(
             ErrorKind::InvalidInput,
@@ -39,13 +43,17 @@ pub fn pack(source_dir: &Path, destination_file: &Path, password: &str) -> Resul
 
     // 7. Gracefully dismantle and finalize the pipeline
     let compressor = tar_builder.into_inner()?;
-    let encryptor = compressor.finish()?; // xz2 finish
-    encryptor.finish()?;                      // ChaCha20 MAC finish
-                          // Placeholder, should create the archive
+    let encryptor = compressor.finish()?;
+    encryptor.finish()?;
+
     Ok(())
 }
 
-pub fn unpack(source_file: &Path, destination_dir: &Path, password: &str) -> Result<(), Box<dyn Error>> {
+pub fn unpack(
+    source_file: &Path,
+    destination_dir: &Path,
+    password: &str,
+) -> Result<(), Box<dyn Error>> {
     if destination_dir.exists() {
         return Err(std::io::Error::new(
             ErrorKind::AlreadyExists,
@@ -71,10 +79,16 @@ pub fn unpack(source_file: &Path, destination_dir: &Path, password: &str) -> Res
 
     // 5. Execute the streaming pull
     if let Err(error) = tar_archive.unpack(destination_dir) {
-        let should_remove_destination = error.kind() == ErrorKind::InvalidData;
-
-        if should_remove_destination {
-            let _ = fs::remove_dir_all(destination_dir);
+        // Always attempt to remove a partially-extracted destination on any error
+        // so the caller is never left with incomplete, potentially-decrypted data.
+        if destination_dir.exists()
+            && let Err(cleanup_err) = fs::remove_dir_all(destination_dir)
+        {
+            eprintln!(
+                "warning: failed to remove partial extraction at '{}': {}",
+                destination_dir.display(),
+                cleanup_err
+            );
         }
 
         return Err(error.into());

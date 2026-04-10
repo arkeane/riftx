@@ -1,30 +1,69 @@
 use std::fs;
 
-use riftx::{pack};
-
+use riftx::{pack, unpack};
+use tempfile::tempdir;
 
 #[test]
 fn test_pack() {
-    fs::create_dir_all("test_data").unwrap();
-    fs::write("test_data/test_file.txt", "Hello, RiftX!").unwrap();
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("hello.txt"), "Hello, RiftX!").unwrap();
 
-    let input_path = std::path::Path::new("test_data");
-    let output_path = std::path::Path::new("test_data.tar.xz.enc");
+    let archive = dir.path().join("out.riftx");
 
-    let result = pack(input_path, output_path, "test_password");
-
-    assert!(result.is_ok(), "Packing failed: {:?}", result.err());
-
-    assert!(fs::metadata("test_data/test_file.txt").is_ok(), "Original file should still exist after packing");
-
-    fs::remove_dir_all("test_data").unwrap();
-    fs::remove_file("test_data.tar.xz.enc").unwrap();
+    let result = pack(&source, &archive, "test_password");
+    assert!(result.is_ok(), "packing failed: {:?}", result.err());
+    assert!(archive.exists(), "archive file should exist after packing");
+    assert!(
+        source.join("hello.txt").exists(),
+        "original file should still exist after packing"
+    );
 }
 
 #[test]
-#[ignore = "Requires a valid .tar.xz.enc file to unpack, which is not trivial to create in a test environment"]
-fn test_unpack() {
-    // This test would require a valid .tar.xz.enc file to unpack, which is not trivial to create in a test environment.
-    // You would need to create a .tar.xz.enc file using the pack function and then test unpacking it.
-    // For now, this is a placeholder to indicate where the unpacking test would go.
+fn test_round_trip() {
+    let dir = tempdir().unwrap();
+
+    // Build a source tree with a nested file
+    let source = dir.path().join("source");
+    fs::create_dir_all(source.join("sub")).unwrap();
+    fs::write(source.join("root.txt"), "root content").unwrap();
+    fs::write(source.join("sub").join("nested.txt"), "nested content").unwrap();
+
+    let archive = dir.path().join("out.riftx");
+    let destination = dir.path().join("unpacked");
+
+    pack(&source, &archive, "correct_password").expect("pack should succeed");
+    unpack(&archive, &destination, "correct_password").expect("unpack should succeed");
+
+    assert_eq!(
+        fs::read_to_string(destination.join("root.txt")).unwrap(),
+        "root content"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("sub").join("nested.txt")).unwrap(),
+        "nested content"
+    );
+}
+
+#[test]
+fn test_wrong_password_is_rejected() {
+    let dir = tempdir().unwrap();
+
+    let source = dir.path().join("source");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("secret.txt"), "top secret").unwrap();
+
+    let archive = dir.path().join("out.riftx");
+    let destination = dir.path().join("unpacked");
+
+    pack(&source, &archive, "correct_password").expect("pack should succeed");
+    let result = unpack(&archive, &destination, "wrong_password");
+
+    assert!(result.is_err(), "unpack with wrong password should fail");
+    assert!(
+        !destination.exists(),
+        "partial extraction should be cleaned up on failure"
+    );
 }

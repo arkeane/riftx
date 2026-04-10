@@ -71,11 +71,6 @@ jobs:
           mv artifacts/riftx-x86_64-linux/riftx         artifacts/riftx-${VERSION}-x86_64-linux
           mv artifacts/riftx-x86_64-windows.exe/riftx.exe artifacts/riftx-${VERSION}-x86_64-windows.exe
           mv artifacts/riftx-aarch64-macos/riftx         artifacts/riftx-${VERSION}-aarch64-macos
-          zip -r artifacts/source.zip . \
-            --exclude '.git/*' \
-            --exclude 'target/*' \
-            --exclude 'artifacts/*'
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -83,5 +78,4 @@ jobs:
             artifacts/riftx-${{ github.ref_name }}-x86_64-linux
             artifacts/riftx-${{ github.ref_name }}-x86_64-windows.exe
             artifacts/riftx-${{ github.ref_name }}-aarch64-macos
-            artifacts/source.zip
           generate_release_notes: true

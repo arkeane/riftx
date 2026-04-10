@@ -67,9 +67,10 @@ jobs:
 
       - name: Prepare release assets
         run: |
-          mv artifacts/riftx-x86_64-linux/riftx         artifacts/riftx-x86_64-linux
-          mv artifacts/riftx-x86_64-windows/riftx.exe   artifacts/riftx-x86_64-windows.exe
-          mv artifacts/riftx-aarch64-macos/riftx         artifacts/riftx-aarch64-macos
+          VERSION=${{ github.ref_name }}
+          mv artifacts/riftx-x86_64-linux/riftx         artifacts/riftx-${VERSION}-x86_64-linux
+          mv artifacts/riftx-x86_64-windows/riftx.exe   artifacts/riftx-${VERSION}-x86_64-windows.exe
+          mv artifacts/riftx-aarch64-macos/riftx         artifacts/riftx-${VERSION}-aarch64-macos
           zip -r artifacts/source.zip . \
             --exclude '.git/*' \
             --exclude 'target/*' \
@@ -79,8 +80,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/riftx-x86_64-linux
-            artifacts/riftx-x86_64-windows.exe
-            artifacts/riftx-aarch64-macos
+            artifacts/riftx-${{ github.ref_name }}-x86_64-linux
+            artifacts/riftx-${{ github.ref_name }}-x86_64-windows.exe
+            artifacts/riftx-${{ github.ref_name }}-aarch64-macos
             artifacts/source.zip
           generate_release_notes: true

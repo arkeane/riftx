@@ -1,4 +1,6 @@
 use crate::engine::crypto::{CryptoReader, CryptoWriter, generate_salt};
+use crate::engine::utils::{ByteCounter, init_progress_bar};
+use indicatif::ProgressStyle;
 use liblzma::read::XzDecoder;
 use liblzma::stream::MtStreamBuilder;
 use liblzma::write::XzEncoder;
@@ -8,6 +10,7 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::thread;
+use std::time::Duration;
 use tar::Archive;
 use tar::Builder;
 
@@ -24,6 +27,9 @@ pub fn pack(
         .into());
     }
 
+    let pb = init_progress_bar();
+    pb.enable_steady_tick(Duration::from_millis(80));
+
     // 1. Core: Open the file
     let mut dest_file = File::create(destination_file)?;
 
@@ -32,9 +38,14 @@ pub fn pack(
     dest_file.write_all(&salt)?;
 
     // 3. Layer 1: The Encryptor
+    pb.set_message("Deriving key...");
     let encryptor = CryptoWriter::new(dest_file, password, &salt)?;
 
     // 4. Layer 2: The Compressor (multi-threaded)
+    // TODO: MtStreamBuilder blocks XzEncoder::write() at block boundaries while
+    // worker threads sync, which stalls ByteCounter and makes the progress bar
+    // freeze at reproducible positions. This should be investigated and fixed
+    // As of now the progress bar is usefull enough to show overall progress.
     let thread_count = thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(1);
@@ -46,16 +57,26 @@ pub fn pack(
 
     let compressor = XzEncoder::new_stream(encryptor, mt_stream);
 
-    // 5. The Shell: The Tar Builder
-    let mut tar_builder = Builder::new(compressor);
+    // 5. The Shell: The Tar Builder — ByteCounter sits between tar and the
+    //    compressor, counting source bytes and updating the spinner live.
+    let mut tar_builder = Builder::new(ByteCounter::with_progress(compressor, pb.clone()));
 
     // 6. Execute the streaming push
     tar_builder.append_dir_all(".", source_dir)?;
 
     // 7. Gracefully dismantle and finalize the pipeline
-    let compressor = tar_builder.into_inner()?;
+    let byte_counter = tar_builder.into_inner()?;
+    let final_src = byte_counter.count();
+    let compressor = byte_counter.into_inner();
     let encryptor = compressor.finish()?;
     encryptor.finish()?;
+
+    let final_out = fs::metadata(destination_file).map(|m| m.len()).unwrap_or(0);
+    pb.finish_with_message(format!(
+        "Done. {:.1} MB → {:.1} MB",
+        final_src as f64 / 1_048_576.0,
+        final_out as f64 / 1_048_576.0,
+    ));
 
     Ok(())
 }
@@ -73,6 +94,12 @@ pub fn unpack(
         .into());
     }
 
+    let pb = init_progress_bar();
+    pb.enable_steady_tick(Duration::from_millis(80));
+
+    // File size minus 32-byte salt header — used for bytes-based progress during extraction
+    let encrypted_len = fs::metadata(source_file)?.len().saturating_sub(32);
+
     let mut src_file = File::open(source_file)?;
 
     // 1. Read the first 32 bytes to get the salt
@@ -80,7 +107,16 @@ pub fn unpack(
     src_file.read_exact(&mut salt)?;
 
     // 2. Layer 1: The Decryptor
-    let decryptor = CryptoReader::new(src_file, password, &salt)?;
+    pb.set_message("Deriving key...");
+    let decryptor = CryptoReader::new(pb.wrap_read(src_file), password, &salt)?;
+
+    pb.set_length(encrypted_len);
+    pb.set_style(
+        ProgressStyle::with_template("{spinner} {msg} [{bytes}/{total_bytes}]")
+            .unwrap()
+            .tick_strings(&["⣾", "⣷", "⣯", "⣟", "⣻", "⣽", "⣾", "⣷"]),
+    );
+    pb.set_message("Unpacking...");
 
     // 3. Layer 2: The Decompressor
     let decompressor = XzDecoder::new(decryptor);
@@ -102,8 +138,10 @@ pub fn unpack(
             );
         }
 
+        pb.abandon_with_message("Failed.");
         return Err(error.into());
     }
 
+    pb.finish_with_message("Done.");
     Ok(())
 }

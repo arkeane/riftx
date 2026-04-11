@@ -1,6 +1,6 @@
 [package]
 name = "riftx"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 
 [lib]
@@ -15,8 +15,9 @@ path = "src/main.rs"
 argon2 = "0.5.3"
 chacha20poly1305 = "0.10.1"
 clap = { version = "4.6.0", features = ["derive"] }
+indicatif = "0.18.4"
 liblzma = { version = "0.4.6", features = ["parallel"] }
-rand = "0.10.0"
+rand = "0.10.1"
 rayon = "1.11.0"
 rpassword = "7.4.0"
 tar = "0.4.45"

@@ -13,10 +13,8 @@ use cli::*;
     name = "riftx",
     version,
     about = "Securely pack and unpack project folders using ChaCha20-Poly1305 encryption",
-    long_about = "RiftX is a high-performance CLI tool for creating encrypted archives. \
-                  It pipelines tar archiving, xz compression, and ChaCha20-Poly1305 \
-                  encryption to ensure your data remains private and compact.",
-    after_help = riftx::disclaimer().unwrap()
+    long_about = None,
+    after_help = "Copyright (c) 2026, Ludovico Pestarino. Use at your own risk."
 )]
 struct Cli {
     #[command(subcommand)]

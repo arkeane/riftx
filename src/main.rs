@@ -23,24 +23,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create an encrypted .riftx archive from a directory
-    #[command(
-        visible_alias = "p",
-        after_help = "Password resolution order: --password flag > RIFTX_PASSWORD env var > interactive prompt.\n\
-                      WARNING: --password exposes the secret in process listings and shell history."
-    )]
+    /// Pack a directory into a .riftx archive
+    #[command(visible_alias = "p")]
     Pack {
         /// Source directory to archive
         #[arg(short, long, value_name = "DIR")]
         input: String,
 
-        /// Output file path [default: <INPUT>.riftx]
-        #[arg(short, long, value_name = "FILE")]
+        /// Output file path (defaults to <SOURCE>.riftx)
+        #[arg(
+            short,
+            long,
+            value_name = "FILE",
+            long_help = "Output file path (defaults to <INPUT>.riftx)\nNOTE: If `--no-enc` is used without `--output` the resulting `<INPUT>.riftx` file is actually a standard `.tar.xz` archive that can be renamed and extracted with standard tools if needed."
+        )]
         output: Option<String>,
 
         /// Encryption password (omit for secure prompt).
-        /// WARNING: passing a password via this flag exposes it in process
-        /// listings and shell history. Prefer the interactive prompt.
         #[arg(short, long, value_name = "STR")]
         password: Option<String>,
 
@@ -50,23 +49,22 @@ enum Commands {
     },
 
     /// Extract and decrypt a .riftx archive
-    #[command(
-        visible_alias = "u",
-        after_help = "Password resolution order: --password flag > RIFTX_PASSWORD env var > interactive prompt.\n\
-                      WARNING: --password exposes the secret in process listings and shell history."
-    )]
+    #[command(visible_alias = "u")]
     Unpack {
-        /// Encrypted archive to extract
-        #[arg(short, long, value_name = "FILE")]
+        /// Archive file to extract (.riftx or .tar.xz only with --no-enc)
+        #[arg(
+            short,
+            long,
+            value_name = "FILE",
+            long_help = "Archive file to extract (.riftx or .tar.xz with --no-enc)\nNOTE: If `--no-enc` is used the tool can extract standard .tar.xz archives"
+        )]
         input: String,
 
-        /// Destination directory [default: current folder]
+        /// Destination directory (defaults to archive name)
         #[arg(short, long, value_name = "DIR")]
         output: Option<String>,
 
-        /// Decryption password (omit for secure prompt).
-        /// WARNING: passing a password via this flag exposes it in process
-        /// listings and shell history. Prefer the interactive prompt.
+        /// Decryption password (omit for secure prompt)
         #[arg(short, long, value_name = "STR")]
         password: Option<String>,
 
@@ -98,7 +96,6 @@ fn run_cli() -> std::result::Result<(), Box<dyn Error>> {
                 // .with_extension("riftx") replaces any existing extension or adds it if missing
                 input_path.with_extension("riftx")
             });
-            let password = prompt_for_password_with_confirmation(password.as_deref())?;
 
             if *noenc {
                 pack(input_path, &output_path, None, *noenc)?;
@@ -118,7 +115,6 @@ fn run_cli() -> std::result::Result<(), Box<dyn Error>> {
                 .as_ref()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| default_unpack_output(input_path));
-            let password = prompt_for_password(password.as_deref())?;
 
             if *noenc {
                 unpack(input_path, &output_path, None, *noenc)?;

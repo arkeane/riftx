@@ -95,12 +95,8 @@ fn run_cli() -> std::result::Result<(), Box<dyn Error>> {
         }) => {
             let input_path = std::path::Path::new(input);
             let output_path = output.as_ref().map(PathBuf::from).unwrap_or_else(|| {
-                let archive_name = input_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("archive");
-
-                PathBuf::from(format!("{}.riftx", archive_name))
+                // .with_extension("riftx") replaces any existing extension or adds it if missing
+                input_path.with_extension("riftx")
             });
             let password = prompt_for_password_with_confirmation(password.as_deref())?;
 

@@ -66,41 +66,15 @@ pub fn prompt_for_password_with_confirmation(
 }
 
 pub fn default_unpack_output(input_path: &Path) -> PathBuf {
-    let archive_name = input_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_else(|| {
-            eprintln!(
-                "warning: could not determine archive filename, defaulting output to 'archive'"
-            );
-            "archive"
-        });
-
-    let stripped = archive_name.strip_suffix(".riftx").unwrap_or(archive_name);
-
-    // Take only the final path component after stripping the suffix so that a
-    // maliciously or accidentally named archive (e.g. "../../secret.riftx")
-    // cannot redirect the output outside the current directory.
-    let folder_name = Path::new(stripped)
-        .file_name()
+    let sanitized_name = input_path
+        .file_stem()
+        .and_then(|s| Path::new(s).file_name())
         .and_then(|n| n.to_str())
         .unwrap_or_else(|| {
-            eprintln!("warning: could not sanitize output folder name, defaulting to 'archive'");
+            eprintln!("warning: could not determine archive filename, defaulting to 'archive'");
             "archive"
         });
-
-    let output_name = if folder_name.is_empty() {
-        "archive"
-    } else {
-        folder_name
-    };
-
-    std::env::current_dir()
-        .unwrap_or_else(|_| {
-            eprintln!("warning: could not determine current directory, using '.'");
-            PathBuf::from(".")
-        })
-        .join(output_name)
+    PathBuf::from(sanitized_name)
 }
 
 #[cfg(test)]

@@ -53,7 +53,6 @@ impl<W: Write> Write for ByteCounter<W> {
     }
 }
 
-
 // Initializes a progress bar if stdout is a terminal, otherwise returns a hidden progress bar.
 pub fn init_progress_bar() -> ProgressBar {
     let pb = if stdout().is_terminal() {
@@ -69,4 +68,15 @@ pub fn init_progress_bar() -> ProgressBar {
     };
 
     pb
+}
+
+pub fn disclaimer() -> Result<String, ()> {
+    let disclaimer = format!(
+        r#"Copyright (c) 2026, Ludovico Pestarino
+This tool is a work in progress and may not be fully functional or accurate.
+Use at your own risk.
+The author of this tool does not take any responsibility for the accuracy or completeness of the data provided by this tool."#,
+    );
+
+    Ok(disclaimer)
 }

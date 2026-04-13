@@ -21,34 +21,48 @@ Note: riftx does not aim to substitute version control systems (like Git) or act
 cargo install --path .
 ```
 
-### Download Pre-compiled
-Grab the latest standalone executable for Windows, macOS, or Linux from the Releases page.
+### Download pre-compiled binary
+Grab the latest executable from the [Releases](https://github.com/arkeane/riftx/releases) page.
 
 ## Usage
 
 ```sh
-# Pack a directory
+# Pack a directory to a .riftx file
 riftx pack --input ./my-project
+
+# Unpack a .riftx file
+riftx unpack --input backup.riftx
 
 # Pack with a custom output path
 riftx pack --input ./my-project --output backup.riftx
 
-# Unpack an archive
-riftx unpack --input backup.riftx
-
-# Unpack to a specific directory
+# Unpack a .riftx file to a specific directory
 riftx unpack --input backup.riftx --output ./restored
+
+# Pack without encryption (produces a tar.xz)
+riftx pack --input ./my-project --output my-project.tar.xz --no-enc
+
+# Unpack without encryption (unpacks a tar.xz)
+riftx unpack --input my-project.tar.xz --output ./restored --no-enc
 ```
 
 Aliases: `p` for `pack`, `u` for `unpack`.
+
+[!NOTE]
+If `--no-enc` is used without `--output` the resulting `<INPUT>.riftx` file is actually a standard `.tar.xz` archive that can be renamed and extracted with standard tools if needed.
 
 ## Password resolution
 
 Passwords are resolved in this order:
 
-1. `--password` flag _(avoid — exposes secret in process listings and shell history)_
-2. `RIFTX_PASSWORD` environment variable
-3. Interactive prompt _(recommended)_
+  1. `--password` flag (Highest priority - **Insecure**)
+  2. `RIFTX_PASSWORD` environment variable
+  3. Interactive prompt (Lower priority - **Safest**)
+
+[!WARNING]
+Using the --password flag exposes your secret to process listings (ps aux) and shell history files. Always prefer the interactive prompt.
 
 ---
+## License & Disclaimer
+Copyright (c) 2026, Ludovico Pestarino. Use at your own risk.
 This project is licensed under the BSD 3-Clause License see the [LICENSE](LICENSE.md) file for details

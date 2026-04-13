@@ -43,6 +43,10 @@ enum Commands {
         /// listings and shell history. Prefer the interactive prompt.
         #[arg(short, long, value_name = "STR")]
         password: Option<String>,
+
+        /// Disable Encryption (creates a standard .tar.xz)
+        #[arg(long = "no-enc", value_name = "BOOL")]
+        noenc: bool,
     },
 
     /// Extract and decrypt a .riftx archive
@@ -65,6 +69,10 @@ enum Commands {
         /// listings and shell history. Prefer the interactive prompt.
         #[arg(short, long, value_name = "STR")]
         password: Option<String>,
+
+        /// Treat the archive as unencrypted
+        #[arg(long = "no-enc", value_name = "BOOL")]
+        noenc: bool,
     },
 }
 
@@ -83,6 +91,7 @@ fn run_cli() -> std::result::Result<(), Box<dyn Error>> {
             input,
             output,
             password,
+            noenc,
         }) => {
             let input_path = std::path::Path::new(input);
             let output_path = output.as_ref().map(PathBuf::from).unwrap_or_else(|| {
@@ -95,12 +104,18 @@ fn run_cli() -> std::result::Result<(), Box<dyn Error>> {
             });
             let password = prompt_for_password_with_confirmation(password.as_deref())?;
 
-            pack(input_path, &output_path, password.as_str())?;
+            if *noenc {
+                pack(input_path, &output_path, None, *noenc)?;
+            } else {
+                let password = prompt_for_password_with_confirmation(password.as_deref())?;
+                pack(input_path, &output_path, Some(password.as_str()), *noenc)?;
+            }
         }
         Some(Commands::Unpack {
             input,
             output,
             password,
+            noenc,
         }) => {
             let input_path = std::path::Path::new(input);
             let output_path = output
@@ -109,7 +124,12 @@ fn run_cli() -> std::result::Result<(), Box<dyn Error>> {
                 .unwrap_or_else(|| default_unpack_output(input_path));
             let password = prompt_for_password(password.as_deref())?;
 
-            unpack(input_path, &output_path, password.as_str())?;
+            if *noenc {
+                unpack(input_path, &output_path, None, *noenc)?;
+            } else {
+                let password = prompt_for_password(password.as_deref())?;
+                unpack(input_path, &output_path, Some(password.as_str()), *noenc)?;
+            }
         }
         None => {
             // No subcommand provided, show help

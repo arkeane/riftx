@@ -1,77 +1,84 @@
 use crate::engine::crypto::{CryptoReader, CryptoWriter, generate_salt};
 use crate::engine::utils::{ByteCounter, init_progress_bar};
-use indicatif::ProgressStyle;
+use indicatif::{ProgressBar, ProgressStyle};
 use liblzma::read::XzDecoder;
 use liblzma::stream::MtStreamBuilder;
 use liblzma::write::XzEncoder;
 use std::error::Error;
-use std::fs;
-use std::fs::File;
-use std::io::{ErrorKind, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
-use tar::Archive;
-use tar::Builder;
+use tar::{Archive, Builder};
+
+fn get_thread_count() -> u32 {
+    thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+}
+
+fn cleanup_failed_unpack(dir: &Path, pb: &ProgressBar, err: io::Error) -> Box<dyn Error> {
+    if dir.exists() {
+        if let Err(e) = fs::remove_dir_all(dir) {
+            eprintln!(
+                "warning: failed to remove partial extraction at '{}': {}",
+                dir.display(),
+                e
+            );
+        }
+    }
+    pb.abandon_with_message("Failed.");
+    err.into()
+}
 
 pub fn pack(
-    source_dir: &Path,
-    destination_file: &Path,
-    password: &str,
+    src: &Path,
+    dest: &Path,
+    password: Option<&str>,
+    noenc: bool,
 ) -> Result<(), Box<dyn Error>> {
-    if !source_dir.is_dir() {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidInput,
-            "pack source must be a directory",
-        )
-        .into());
+    if !src.is_dir() {
+        return Err(
+            io::Error::new(ErrorKind::InvalidInput, "Error: source must be a directory").into(),
+        );
     }
 
     let pb = init_progress_bar();
     pb.enable_steady_tick(Duration::from_millis(80));
 
-    // 1. Core: Open the file
-    let mut dest_file = File::create(destination_file)?;
+    let mut file = File::create(dest)?;
 
-    // 2. Write the plain-text salt to the very top of the file FIRST
-    let salt = generate_salt();
-    dest_file.write_all(&salt)?;
+    // 1. Optional Encryption Layer
+    let writer: Box<dyn Write> = if !noenc && let Some(pass) = password {
+        let salt = generate_salt();
+        file.write_all(&salt)?;
+        pb.set_message("Deriving key...");
+        Box::new(CryptoWriter::new(file, pass, &salt)?)
+    } else {
+        Box::new(file)
+    };
 
-    // 3. Layer 1: The Encryptor
-    pb.set_message("Deriving key...");
-    let encryptor = CryptoWriter::new(dest_file, password, &salt)?;
-
-    // 4. Layer 2: The Compressor (multi-threaded)
-    // TODO: MtStreamBuilder blocks XzEncoder::write() at block boundaries while
-    // worker threads sync, which stalls ByteCounter and makes the progress bar
-    // freeze at reproducible positions. This should be investigated and fixed
-    // As of now the progress bar is usefull enough to show overall progress.
-    let thread_count = thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(1);
-
+    // 2. Compression Layer
     let mt_stream = MtStreamBuilder::new()
-        .threads(thread_count)
+        .threads(get_thread_count())
         .preset(6)
         .encoder()?;
+    let compressor = XzEncoder::new_stream(writer, mt_stream);
 
-    let compressor = XzEncoder::new_stream(encryptor, mt_stream);
-
-    // 5. The Shell: The Tar Builder — ByteCounter sits between tar and the
-    //    compressor, counting source bytes and updating the spinner live.
+    // 3. Tar Layer
+    pb.set_message("Packing...");
     let mut tar_builder = Builder::new(ByteCounter::with_progress(compressor, pb.clone()));
+    tar_builder.append_dir_all(".", src)?;
 
-    // 6. Execute the streaming push
-    tar_builder.append_dir_all(".", source_dir)?;
-
-    // 7. Gracefully dismantle and finalize the pipeline
+    // 4. Finalize (unwrapping the stack)
     let byte_counter = tar_builder.into_inner()?;
     let final_src = byte_counter.count();
     let compressor = byte_counter.into_inner();
-    let encryptor = compressor.finish()?;
-    encryptor.finish()?;
+    let mut inner_writer = compressor.finish()?;
+    inner_writer.flush()?;
 
-    let final_out = fs::metadata(destination_file).map(|m| m.len()).unwrap_or(0);
+    let final_out = fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
     pb.finish_with_message(format!(
         "Done. {:.1} MB → {:.1} MB",
         final_src as f64 / 1_048_576.0,
@@ -82,64 +89,45 @@ pub fn pack(
 }
 
 pub fn unpack(
-    source_file: &Path,
-    destination_dir: &Path,
-    password: &str,
+    src: &Path,
+    dest: &Path,
+    password: Option<&str>,
+    noenc: bool,
 ) -> Result<(), Box<dyn Error>> {
-    if destination_dir.exists() {
-        return Err(std::io::Error::new(
-            ErrorKind::AlreadyExists,
-            "destination folder already exists",
-        )
-        .into());
+    if dest.exists() {
+        return Err(io::Error::new(ErrorKind::AlreadyExists, "destination already exists").into());
     }
 
     let pb = init_progress_bar();
     pb.enable_steady_tick(Duration::from_millis(80));
+    let mut file = File::open(src)?;
 
-    // File size minus 32-byte salt header — used for bytes-based progress during extraction
-    let encrypted_len = fs::metadata(source_file)?.len().saturating_sub(32);
+    // 1. Optional Decryption Layer
+    let reader: Box<dyn Read> = if !noenc && let Some(pass) = password {
+        let mut salt = [0u8; 32];
+        file.read_exact(&mut salt)?;
+        pb.set_message("Deriving key...");
+        let encrypted_len = fs::metadata(src)?.len().saturating_sub(32);
+        pb.set_length(encrypted_len);
+        Box::new(CryptoReader::new(pb.wrap_read(file), pass, &salt)?)
+    } else {
+        pb.set_length(fs::metadata(src)?.len());
+        Box::new(file)
+    };
 
-    let mut src_file = File::open(source_file)?;
-
-    // 1. Read the first 32 bytes to get the salt
-    let mut salt = [0u8; 32];
-    src_file.read_exact(&mut salt)?;
-
-    // 2. Layer 1: The Decryptor
-    pb.set_message("Deriving key...");
-    let decryptor = CryptoReader::new(pb.wrap_read(src_file), password, &salt)?;
-
-    pb.set_length(encrypted_len);
     pb.set_style(
-        ProgressStyle::with_template("{spinner} {msg} [{bytes}/{total_bytes}]")
+        ProgressStyle::with_template("{spinner} {msg} {bytes}/{total_bytes}")
             .unwrap()
             .tick_strings(&["⣾", "⣷", "⣯", "⣟", "⣻", "⣽", "⣾", "⣷"]),
     );
     pb.set_message("Unpacking...");
 
-    // 3. Layer 2: The Decompressor
-    let decompressor = XzDecoder::new(decryptor);
-
-    // 4. The Shell: The Tar Archive
+    // 2. Decompression & Tar
+    let decompressor = XzDecoder::new(reader);
     let mut tar_archive = Archive::new(decompressor);
 
-    // 5. Execute the streaming pull
-    if let Err(error) = tar_archive.unpack(destination_dir) {
-        // Always attempt to remove a partially-extracted destination on any error
-        // so the caller is never left with incomplete, potentially-decrypted data.
-        if destination_dir.exists()
-            && let Err(cleanup_err) = fs::remove_dir_all(destination_dir)
-        {
-            eprintln!(
-                "warning: failed to remove partial extraction at '{}': {}",
-                destination_dir.display(),
-                cleanup_err
-            );
-        }
-
-        pb.abandon_with_message("Failed.");
-        return Err(error.into());
+    if let Err(e) = tar_archive.unpack(dest) {
+        return Err(cleanup_failed_unpack(dest, &pb, e));
     }
 
     pb.finish_with_message("Done.");

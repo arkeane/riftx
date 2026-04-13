@@ -12,7 +12,7 @@ fn test_pack() {
 
     let archive = dir.path().join("out.riftx");
 
-    let result = pack(&source, &archive, "test_password");
+    let result = pack(&source, &archive, Some("test_password"), false);
     assert!(result.is_ok(), "packing failed: {:?}", result.err());
     assert!(archive.exists(), "archive file should exist after packing");
     assert!(
@@ -34,8 +34,8 @@ fn test_round_trip() {
     let archive = dir.path().join("out.riftx");
     let destination = dir.path().join("unpacked");
 
-    pack(&source, &archive, "correct_password").expect("pack should succeed");
-    unpack(&archive, &destination, "correct_password").expect("unpack should succeed");
+    pack(&source, &archive, Some("correct_password"), false).expect("pack should succeed");
+    unpack(&archive, &destination, Some("correct_password"), false).expect("unpack should succeed");
 
     assert_eq!(
         fs::read_to_string(destination.join("root.txt")).unwrap(),
@@ -58,8 +58,8 @@ fn test_wrong_password_is_rejected() {
     let archive = dir.path().join("out.riftx");
     let destination = dir.path().join("unpacked");
 
-    pack(&source, &archive, "correct_password").expect("pack should succeed");
-    let result = unpack(&archive, &destination, "wrong_password");
+    pack(&source, &archive, Some("correct_password"), false).expect("pack should succeed");
+    let result = unpack(&archive, &destination, Some("wrong_password"), false);
 
     assert!(result.is_err(), "unpack with wrong password should fail");
     assert!(

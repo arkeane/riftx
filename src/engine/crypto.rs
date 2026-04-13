@@ -75,6 +75,7 @@ impl<W: Write> CryptoWriter<W> {
         })
     }
 
+    #[allow(dead_code)]
     pub fn finish(mut self) -> io::Result<W> {
         let mut inner = self
             .inner

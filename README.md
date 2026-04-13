@@ -60,7 +60,7 @@ Passwords are resolved in this order:
   3. Interactive prompt (Lower priority - **Safest**)
 
 > [!WARNING]
-> Using the `--password` flag exposes your secret to process listings (ps aux) and shell > history files. Always prefer the interactive prompt.
+> Using the `--password` flag exposes your secret to process listings (ps aux) and shell history files. Always prefer the interactive prompt.
 
 ---
 ## License & Disclaimer

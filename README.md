@@ -49,7 +49,7 @@ riftx unpack --input my-project.tar.xz --output ./restored --no-enc
 Aliases: `p` for `pack`, `u` for `unpack`.
 
 > [!NOTE]
-> If `--no-enc` is used without `--output` the resulting `<INPUT>.riftx` file is actually a > standard `.tar.xz` archive that can be renamed and extracted with standard tools if needed.
+> If `--no-enc` is used without `--output` the resulting `<INPUT>.riftx` file is actually a standard `.tar.xz` archive that can be renamed and extracted with standard tools if needed.
 
 ## Password resolution
 
